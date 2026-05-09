@@ -5,10 +5,19 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 
+try:
+    from azure.core.exceptions import ResourceNotFoundError
+    from azure.storage.blob import BlobServiceClient
+except ImportError:
+    ResourceNotFoundError = None
+    BlobServiceClient = None
+
 load_dotenv()
 
 CALFIRE_URL = "https://incidents.fire.ca.gov/umbraco/api/IncidentApi/GeoJsonList?inactive=false"
 SEEN_FILE = Path("seen_fires.json")
+SEEN_BLOB_CONTAINER = os.getenv("SEEN_FIRES_CONTAINER", "fire-alert-state")
+SEEN_BLOB_NAME = os.getenv("SEEN_FIRES_BLOB", "seen_fires.json")
 
 TEAMS_WEBHOOK_URL = os.getenv("TEAMS_WEBHOOK_URL")
 
@@ -35,7 +44,37 @@ HEADERS = {
 }
 
 
+def get_seen_storage_connection_string():
+    connection_string = (
+        os.getenv("SEEN_FIRES_STORAGE_CONNECTION_STRING")
+        or os.getenv("AzureWebJobsStorage")
+    )
+    if not connection_string or connection_string == "UseDevelopmentStorage=true":
+        return None
+    return connection_string
+
+
+def get_seen_blob_client():
+    connection_string = get_seen_storage_connection_string()
+    if not connection_string or BlobServiceClient is None:
+        return None
+    service = BlobServiceClient.from_connection_string(connection_string)
+    container = service.get_container_client(SEEN_BLOB_CONTAINER)
+    try:
+        container.create_container()
+    except Exception:
+        pass
+    return container.get_blob_client(SEEN_BLOB_NAME)
+
+
 def load_seen_fires():
+    blob = get_seen_blob_client()
+    if blob:
+        try:
+            return set(json.loads(blob.download_blob().readall()))
+        except ResourceNotFoundError:
+            return set()
+
     if SEEN_FILE.exists():
         with open(SEEN_FILE, "r") as f:
             return set(json.load(f))
@@ -43,8 +82,14 @@ def load_seen_fires():
 
 
 def save_seen_fires(seen):
+    payload = json.dumps(sorted(seen), indent=2)
+    blob = get_seen_blob_client()
+    if blob:
+        blob.upload_blob(payload, overwrite=True)
+        return
+
     with open(SEEN_FILE, "w") as f:
-        json.dump(sorted(seen), f, indent=2)
+        f.write(payload)
 
 
 def send_teams_message(subject, body):

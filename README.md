@@ -101,6 +101,39 @@ The workflow runs `python fire_check.py`, posts new alerts to Teams, and commits
 
 GitHub schedules can be delayed, so "every 5 minutes" may not be exact to the second.
 
+## Run automatically with Azure Functions
+
+Azure Functions can run the checker on a timer without keeping your computer on. This repo includes:
+
+- `function_app.py` for the 5-minute timer trigger
+- `host.json` for the Azure Functions runtime
+- Azure Blob Storage-backed state so duplicate alerts are remembered between runs
+
+The timer schedule is:
+
+```python
+schedule="0 */5 * * * *"
+```
+
+That means every 5 minutes.
+
+High-level setup:
+
+1. Create an Azure Function App for Python.
+2. Use a plan that supports timer triggers, such as the Consumption plan.
+3. Add this application setting in the Function App:
+
+```text
+TEAMS_WEBHOOK_URL=your Teams webhook URL
+```
+
+4. Deploy this repo to the Function App.
+5. In Azure, open the function logs and confirm `fire_alert_check` is running every 5 minutes.
+
+Azure Functions requires a storage account for timer triggers. The script also uses that same storage connection, `AzureWebJobsStorage`, to save `seen_fires.json` in a blob container named `fire-alert-state`.
+
+If you switch to Azure Functions, disable the GitHub Actions workflow so both systems do not send duplicate alerts.
+
 ## Change where alerts go
 
 Update `TEAMS_WEBHOOK_URL` in `.env`, then run:

@@ -1,4 +1,5 @@
 .env
+local.settings.json
 seen_fires.json
 __pycache__/
 *.pyc

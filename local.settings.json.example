@@ -1,0 +1,8 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "TEAMS_WEBHOOK_URL": "https://example.webhook.office.com/webhookb2/..."
+  }
+}
