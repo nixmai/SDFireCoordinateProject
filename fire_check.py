@@ -1,10 +1,8 @@
 import argparse
 import os
 import json
-import smtplib
 import requests
 from pathlib import Path
-from email.mime.text import MIMEText
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,15 +10,22 @@ load_dotenv()
 CALFIRE_URL = "https://incidents.fire.ca.gov/umbraco/api/IncidentApi/GeoJsonList?inactive=false"
 SEEN_FILE = Path("seen_fires.json")
 
-FROM_EMAIL = os.getenv("FROM_EMAIL")
-FROM_PASSWORD = os.getenv("FROM_PASSWORD")
-TO_EMAIL = os.getenv("TO_EMAIL")
+TEAMS_WEBHOOK_URL = os.getenv("TEAMS_WEBHOOK_URL")
 
 # Lowercase substrings matched against County / Counties fields from CAL FIRE.
-TARGET_COUNTY_SUBSTRINGS = ("san diego", "los angeles", "orange")
+# Use an empty tuple to monitor all active California incidents.
+TARGET_COUNTY_SUBSTRINGS = ()
+
+
+def monitored_region_label():
+    if not TARGET_COUNTY_SUBSTRINGS:
+        return "California"
+    return " / ".join(s.title() for s in TARGET_COUNTY_SUBSTRINGS)
 
 
 def county_in_target_regions(county_text: str) -> bool:
+    if not TARGET_COUNTY_SUBSTRINGS:
+        return True
     return any(s in county_text for s in TARGET_COUNTY_SUBSTRINGS)
 
 
@@ -42,34 +47,56 @@ def save_seen_fires(seen):
         json.dump(list(seen), f, indent=2)
 
 
-def send_email(subject, body):
-    """Send alert email. Falls back to console print if .env is not configured."""
-    if not FROM_EMAIL or not FROM_PASSWORD or not TO_EMAIL:
+def send_teams_message(subject, body):
+    """Send an alert to Microsoft Teams. Falls back to console print if not configured."""
+    if not TEAMS_WEBHOOK_URL:
         print("\n" + "="*50)
-        print("EMAIL NOT CONFIGURED — printing alert to console:")
+        print("TEAMS WEBHOOK NOT CONFIGURED - printing alert to console:")
         print("="*50)
         print(f"SUBJECT: {subject}")
         print(body)
         print("="*50 + "\n")
-        return
-
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = FROM_EMAIL
-    msg["To"] = TO_EMAIL
+        return False
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(FROM_EMAIL, FROM_PASSWORD)
-            server.send_message(msg)
-        print(f"Email sent to {TO_EMAIL}")
-    except smtplib.SMTPAuthenticationError:
-        print("\nERROR: Gmail login failed.")
-        print("FROM_PASSWORD must be a Gmail App Password, not your regular password.")
-        print("Generate one at: https://myaccount.google.com/apppasswords\n")
-    except Exception as e:
-        print(f"ERROR: Could not send email: {e}")
+        payload = {
+            "type": "message",
+            "attachments": [
+                {
+                    "contentType": "application/vnd.microsoft.card.adaptive",
+                    "content": {
+                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                        "type": "AdaptiveCard",
+                        "version": "1.2",
+                        "body": [
+                            {
+                                "type": "TextBlock",
+                                "text": subject,
+                                "weight": "Bolder",
+                                "size": "Medium",
+                                "wrap": True,
+                            },
+                            {
+                                "type": "TextBlock",
+                                "text": body,
+                                "wrap": True,
+                            },
+                        ],
+                    },
+                }
+            ],
+        }
+        response = requests.post(
+            TEAMS_WEBHOOK_URL,
+            json=payload,
+            timeout=20,
+        )
+        response.raise_for_status()
+        print("Teams message sent.")
+        return True
+    except requests.RequestException as e:
+        print(f"ERROR: Could not send Teams message: {e}")
+        return False
 
 
 def get_fire_id(props, name, latitude, longitude):
@@ -128,8 +155,8 @@ def collect_region_fires(data):
 def format_fire_lines(fires):
     if not fires:
         return (
-            "No active San Diego, Los Angeles, or Orange County incidents in the CAL FIRE feed right now.\n"
-            "(The test still confirms your email + API access work.)\n"
+            f"No active {monitored_region_label()} incidents in the CAL FIRE feed right now.\n"
+            "(The test still confirms your Teams webhook + API access work.)\n"
         )
     lines = []
     for f in fires:
@@ -144,16 +171,14 @@ def format_fire_lines(fires):
     return "\n".join(lines)
 
 
-def send_test_email():
-    """Send a single email to verify SMTP and show current SD / LA / OC incidents (if any)."""
-    if not (FROM_EMAIL and FROM_PASSWORD and TO_EMAIL):
+def send_test_teams_message():
+    """Send a single Teams message to verify the webhook and show current monitored incidents."""
+    if not TEAMS_WEBHOOK_URL:
         print(
-            "\nNo email was sent — Gmail settings are not loaded.\n"
+            "\nNo Teams message was sent - TEAMS_WEBHOOK_URL is not loaded.\n"
             "  • In this project folder, create a file named `.env` (copy from `.env.example`).\n"
-            "  • Set FROM_EMAIL, FROM_PASSWORD, and TO_EMAIL.\n"
-            "  • FROM_PASSWORD must be a Gmail App Password (16 characters), not your normal password:\n"
-            "    https://myaccount.google.com/apppasswords\n"
-            "  • Save `.env`, then run: python fire_check.py --test-email\n"
+            "  • Set TEAMS_WEBHOOK_URL to your Microsoft Teams incoming webhook URL.\n"
+            "  • Save `.env`, then run: python fire_check.py --test-teams\n"
         )
         return
 
@@ -165,18 +190,19 @@ def send_test_email():
 
     total = len(data.get("features", []))
     fires = collect_region_fires(data)
-    body = f"""This is a one-time test from your San Diego / Los Angeles / Orange County fire alert script.
+    region_label = monitored_region_label()
+    body = f"""This is a one-time test from your {region_label} fire alert script.
 
 CAL FIRE active incidents (all CA): {total}
-San Diego + Los Angeles + Orange County matches (active, not final, with coordinates): {len(fires)}
+{region_label} matches (active, not final, with coordinates): {len(fires)}
 
 {format_fire_lines(fires)}
 ---
 Source: CAL FIRE public GeoJSON API (no API key, free)
 """
-    subject = "[TEST] SD / LA / OC fire alert — email check"
-    print(f"Sending test email (SD+LA+OC incidents in feed: {len(fires)})...")
-    send_email(subject, body)
+    subject = f"[TEST] {region_label} fire alert - Teams check"
+    print(f"Sending test Teams message ({region_label} incidents in feed: {len(fires)})...")
+    send_teams_message(subject, body)
 
 
 def check_fires():
@@ -229,8 +255,8 @@ def check_fires():
         maps_link = f"https://www.google.com/maps?q={latitude},{longitude}"
 
         county_label = county_text.title()
-        subject = f"Fire Alert: {name} — {county_label}"
-        body = f"""New active fire detected in monitored counties (San Diego, Los Angeles, Orange).
+        subject = f"Fire Alert: {name} - {county_label}"
+        body = f"""New active fire detected in monitored region ({monitored_region_label()}).
 
 Fire Name:   {name}
 Latitude:    {latitude}
@@ -247,9 +273,9 @@ Google Maps: {maps_link}
 Source: CAL FIRE public incident API
 """
         print(f"  NEW FIRE: {name} at ({latitude}, {longitude})")
-        send_email(subject, body)
-        seen.add(fire_id)
-        new_fires += 1
+        if send_teams_message(subject, body):
+            seen.add(fire_id)
+            new_fires += 1
 
     save_seen_fires(seen)
 
@@ -264,12 +290,17 @@ if __name__ == "__main__":
         description="San Diego + Los Angeles + Orange County fire alerts from CAL FIRE public API"
     )
     parser.add_argument(
+        "--test-teams",
+        action="store_true",
+        help="Send one Teams message to verify webhook + API (no deduplication, no schedule)",
+    )
+    parser.add_argument(
         "--test-email",
         action="store_true",
-        help="Send one email to verify SMTP + API (no deduplication, no schedule)",
+        help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
-    if args.test_email:
-        send_test_email()
+    if args.test_teams or args.test_email:
+        send_test_teams_message()
     else:
         check_fires()

@@ -1,11 +1,9 @@
 # Fire Alert Test (CAL FIRE)
 
-This project checks the public CAL FIRE incident feed and emails fire details (including latitude/longitude) for selected counties.
+This project checks the public CAL FIRE incident feed and sends Microsoft Teams alerts with fire details, including latitude/longitude, for selected counties.
 
-Current monitored counties in the script:
-- San Diego
-- Los Angeles
-- Orange
+Current monitored region in the script:
+- California statewide
 
 No paid API is required.
 
@@ -14,7 +12,7 @@ No paid API is required.
 - Pulls active incidents from CAL FIRE public GeoJSON
 - Filters to monitored counties
 - Extracts coordinates from each incident
-- Sends an email alert
+- Sends a Microsoft Teams message
 - In normal mode, avoids duplicate alerts using `seen_fires.json`
 
 ## Step-by-step setup (for a new person)
@@ -59,26 +57,22 @@ cp .env.example .env
 Edit `.env` and set:
 
 ```env
-FROM_EMAIL=your_gmail@gmail.com
-FROM_PASSWORD=your_16_char_gmail_app_password
-TO_EMAIL=any_email_you_want_to_receive_alerts_at
+TEAMS_WEBHOOK_URL=https://example.webhook.office.com/webhookb2/...
 ```
 
 Notes:
-- `FROM_PASSWORD` must be a Gmail **App Password** (not your normal Gmail password)
-- Create one here: [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
-- `TO_EMAIL` can be any destination inbox (same as sender or different)
+- `TEAMS_WEBHOOK_URL` should be a Microsoft Teams incoming webhook URL for the channel where alerts should appear.
+- Keep the webhook URL private. Anyone with the URL may be able to post to that channel.
 
-### 5) Send one test email now
+### 5) Send one test Teams message now
 
 ```bash
-python3 fire_check.py --test-email
+python3 fire_check.py --test-teams
 ```
 
-This sends one email immediately and confirms:
+This sends one Teams message immediately and confirms:
 - CAL FIRE feed access
-- Email credentials
-- Delivery to your chosen inbox
+- Teams webhook delivery
 
 ### 6) Run normal alert mode
 
@@ -88,17 +82,25 @@ python3 fire_check.py
 
 This mode alerts only on new incidents (deduplicated by `seen_fires.json`).
 
-## Change who receives alerts
+## Change where alerts go
 
-Update `TO_EMAIL` in `.env`, then run:
+Update `TEAMS_WEBHOOK_URL` in `.env`, then run:
 
 ```bash
-python3 fire_check.py --test-email
+python3 fire_check.py --test-teams
 ```
 
-## Change monitored counties
+## Change monitored region
 
 Edit `TARGET_COUNTY_SUBSTRINGS` in `fire_check.py`.
+
+To monitor all active California incidents:
+
+```python
+TARGET_COUNTY_SUBSTRINGS = ()
+```
+
+To monitor specific counties:
 
 Example:
 
@@ -110,13 +112,11 @@ Use lowercase county substrings.
 
 ## Troubleshooting
 
-- **No email received**
-  - Check spam/promotions folders
+- **No Teams message received**
   - Confirm `.env` exists (not just `.env.example`)
-  - Verify Gmail App Password is correct
-- **Authentication error**
-  - Recreate Gmail App Password and update `.env`
-- **0 county matches in email**
+  - Verify `TEAMS_WEBHOOK_URL` is copied exactly
+  - Confirm the Teams channel allows incoming webhook messages
+- **0 county matches in Teams**
   - This can be normal if CAL FIRE currently has no active incidents in monitored counties
 
 ## Security
@@ -124,3 +124,4 @@ Use lowercase county substrings.
 - Never commit `.env`
 - `.env` is ignored by `.gitignore`
 - Keep `.env.example` as placeholders only
+- Treat your Teams webhook URL like a password
