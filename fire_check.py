@@ -44,7 +44,7 @@ def load_seen_fires():
 
 def save_seen_fires(seen):
     with open(SEEN_FILE, "w") as f:
-        json.dump(list(seen), f, indent=2)
+        json.dump(sorted(seen), f, indent=2)
 
 
 def send_teams_message(subject, body):
@@ -280,14 +280,14 @@ Source: CAL FIRE public incident API
     save_seen_fires(seen)
 
     if new_fires == 0:
-        print("No new San Diego / Los Angeles / Orange fires found.")
+        print(f"No new {monitored_region_label()} fires found.")
     else:
         print(f"Done. Sent {new_fires} alert(s).")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="San Diego + Los Angeles + Orange County fire alerts from CAL FIRE public API"
+        description="Fire alerts from CAL FIRE public API"
     )
     parser.add_argument(
         "--test-teams",

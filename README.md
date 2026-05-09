@@ -82,6 +82,25 @@ python3 fire_check.py
 
 This mode alerts only on new incidents (deduplicated by `seen_fires.json`).
 
+## Run automatically with GitHub Actions
+
+This repo includes a GitHub Actions workflow that checks CAL FIRE every 5 minutes.
+
+To enable it:
+
+1. Go to your GitHub repo.
+2. Open **Settings** > **Secrets and variables** > **Actions**.
+3. Click **New repository secret**.
+4. Name it `TEAMS_WEBHOOK_URL`.
+5. Paste your Microsoft Teams webhook URL as the secret value.
+6. Open the **Actions** tab.
+7. Select **Fire Alert Check**.
+8. Click **Run workflow** once to test it.
+
+The workflow runs `python fire_check.py`, posts new alerts to Teams, and commits `seen_fires.json` back to the repo so the next scheduled run does not send duplicates.
+
+GitHub schedules can be delayed, so "every 5 minutes" may not be exact to the second.
+
 ## Change where alerts go
 
 Update `TEAMS_WEBHOOK_URL` in `.env`, then run:

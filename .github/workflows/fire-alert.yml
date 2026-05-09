@@ -1,0 +1,52 @@
+name: Fire Alert Check
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fire-alert-check
+  cancel-in-progress: false
+
+jobs:
+  check-fires:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify Teams webhook secret exists
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: test -n "$TEAMS_WEBHOOK_URL"
+
+      - name: Check CAL FIRE incidents
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: python fire_check.py
+
+      - name: Save seen fire state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f seen_fires.json
+          if git diff --cached --quiet; then
+            echo "No seen fire state changes to commit."
+          else
+            git commit -m "Update seen fire state [skip ci]"
+            git pull --rebase
+            git push
+          fi
