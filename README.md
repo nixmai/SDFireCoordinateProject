@@ -1,19 +1,32 @@
-# Fire Alert Test (CAL FIRE)
+# Fire Alert Agent (CAL FIRE)
 
-This project checks the public CAL FIRE incident feed and sends Microsoft Teams alerts with fire details, including latitude/longitude, for selected counties.
+This project is a **background monitoring agent** for [CAL FIRE active incidents](https://incidents.fire.ca.gov/). It reads the same public GeoJSON feed the website uses (no browser scraping, no API key), watches counties you choose, and sends **Microsoft Teams** alerts when a **new** fire appears.
 
-Current monitored region in the script:
-- California statewide
+Default region: **San Diego County** (change via `MONITOR_COUNTIES` in `.env`).
+
+Alerts go to **Power Automate** (HTTP trigger URL in `.env`). Optional Teams webhook is also supported.
 
 No paid API is required.
 
-## What this script does
+**Choosing how to deploy?** See **[docs/DEPLOYMENT_OPTIONS.md](docs/DEPLOYMENT_OPTIONS.md)** for a full comparison (manual vs local agent vs cloud vs AI), pros/cons, and diagrams for stakeholder review.
 
-- Pulls active incidents from CAL FIRE public GeoJSON
-- Filters to monitored counties
-- Extracts coordinates from each incident
-- Sends a Microsoft Teams message
-- In normal mode, avoids duplicate alerts using `seen_fires.json`
+## How it works
+
+```mermaid
+flowchart LR
+  A[fire_agent.py loop] -->|every N min| B[fire_check.py]
+  B --> C[CAL FIRE GeoJSON API]
+  C --> B
+  B --> D{New incident in your counties?}
+  D -->|yes| E[Power Automate / Teams]
+  D -->|no| F[seen_fires.json dedupe]
+```
+
+- **`fire_check.py`** — one check: fetch feed, filter counties, alert on new fires
+- **`fire_agent.py`** — runs checks on a schedule until you stop it (or use `install_agent.sh` for auto-start on macOS)
+- **`seen_fires.json`** — remembers incidents already alerted so you are not spammed
+
+You do **not** need a literal “go to the website” browser agent. The official API is more reliable than scraping HTML.
 
 ## Step-by-step setup (for a new person)
 
@@ -57,30 +70,53 @@ cp .env.example .env
 Edit `.env` and set:
 
 ```env
-TEAMS_WEBHOOK_URL=https://example.webhook.office.com/webhookb2/...
+POWER_AUTOMATE_WEBHOOK_URL=https://...powerplatform.com/.../triggers/manual/paths/invoke?...
+MONITOR_COUNTIES=san diego
+CHECK_INTERVAL_MINUTES=5
 ```
 
 Notes:
-- `TEAMS_WEBHOOK_URL` should be a Microsoft Teams incoming webhook URL for the channel where alerts should appear.
-- Keep the webhook URL private. Anyone with the URL may be able to post to that channel.
+- `POWER_AUTOMATE_WEBHOOK_URL` — copy the **HTTP POST URL** from your Power Automate flow trigger (“When a HTTP request is received” or manual trigger).
+- For the **“Send webhook alerts to General”** Teams template, the script sends Teams adaptive-card JSON (`type: message` + `attachments`). Plain `subject`/`body` JSON will cause the flow to fail.
+- Optional: `TEAMS_WEBHOOK_URL` for direct Teams posts (used only if Power Automate is not set).
+- `MONITOR_COUNTIES` — comma-separated lowercase substrings (e.g. `san diego, orange`). Leave empty to monitor all of California.
+- Treat webhook URLs like passwords; never commit `.env`.
 
-### 5) Send one test Teams message now
+### 5) Send one test alert now
 
 ```bash
-python3 fire_check.py --test-teams
+python3 fire_check.py --test
 ```
 
-This sends one Teams message immediately and confirms:
+This triggers your Power Automate flow once and confirms:
 - CAL FIRE feed access
-- Teams webhook delivery
+- Webhook delivery
 
-### 6) Run normal alert mode
+### 6) Run the monitoring agent (recommended)
+
+Keep a terminal open and check every 5 minutes:
 
 ```bash
-python3 fire_check.py
+python3 fire_agent.py
 ```
 
-This mode alerts only on new incidents (deduplicated by `seen_fires.json`).
+Single check (no loop):
+
+```bash
+python3 fire_agent.py --once
+# or: python3 fire_check.py
+```
+
+### 7) Run in the background on macOS (optional)
+
+After `.env` is configured and `--test` works:
+
+```bash
+chmod +x install_agent.sh
+./install_agent.sh
+```
+
+Logs go to `agent.log`. To stop: `launchctl bootout gui/$(id -u)/com.sdfire.agent`
 
 ## Run automatically with GitHub Actions
 
@@ -136,39 +172,36 @@ If you switch to Azure Functions, disable the GitHub Actions workflow so both sy
 
 ## Change where alerts go
 
-Update `TEAMS_WEBHOOK_URL` in `.env`, then run:
+Update `POWER_AUTOMATE_WEBHOOK_URL` in `.env`, then run:
 
 ```bash
-python3 fire_check.py --test-teams
+python3 fire_check.py --test
 ```
 
 ## Change monitored region
 
-Edit `TARGET_COUNTY_SUBSTRINGS` in `fire_check.py`.
+Edit `MONITOR_COUNTIES` in `.env`:
 
-To monitor all active California incidents:
+```env
+# San Diego only (default)
+MONITOR_COUNTIES=san diego
 
-```python
-TARGET_COUNTY_SUBSTRINGS = ()
+# Several counties
+MONITOR_COUNTIES=san diego, los angeles, orange
+
+# All of California (leave empty)
+MONITOR_COUNTIES=
 ```
 
-To monitor specific counties:
-
-Example:
-
-```python
-TARGET_COUNTY_SUBSTRINGS = ("san diego", "los angeles", "orange")
-```
-
-Use lowercase county substrings.
+Restart the agent after changing `.env`.
 
 ## Troubleshooting
 
-- **No Teams message received**
-  - Confirm `.env` exists (not just `.env.example`)
-  - Verify `TEAMS_WEBHOOK_URL` is copied exactly
-  - Confirm the Teams channel allows incoming webhook messages
-- **0 county matches in Teams**
+- **No notification received**
+  - Confirm `.env` exists and `POWER_AUTOMATE_WEBHOOK_URL` is copied exactly
+  - In Power Automate, open the flow run history and confirm the test run succeeded
+  - Add actions after the trigger (email, Teams, mobile notification) if the flow only receives HTTP today
+- **0 county matches in test alert**
   - This can be normal if CAL FIRE currently has no active incidents in monitored counties
 
 ## Security

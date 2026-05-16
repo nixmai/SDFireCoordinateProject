@@ -19,11 +19,21 @@ SEEN_FILE = Path("seen_fires.json")
 SEEN_BLOB_CONTAINER = os.getenv("SEEN_FIRES_CONTAINER", "fire-alert-state")
 SEEN_BLOB_NAME = os.getenv("SEEN_FIRES_BLOB", "seen_fires.json")
 
+POWER_AUTOMATE_WEBHOOK_URL = os.getenv("POWER_AUTOMATE_WEBHOOK_URL")
 TEAMS_WEBHOOK_URL = os.getenv("TEAMS_WEBHOOK_URL")
 
+
+def _parse_county_substrings() -> tuple[str, ...]:
+    """Counties from MONITOR_COUNTIES (.env), comma-separated, lowercase substrings."""
+    raw = os.getenv("MONITOR_COUNTIES", "san diego").strip()
+    if not raw:
+        return ()
+    return tuple(s.strip().lower() for s in raw.split(",") if s.strip())
+
+
 # Lowercase substrings matched against County / Counties fields from CAL FIRE.
-# Use an empty tuple to monitor all active California incidents.
-TARGET_COUNTY_SUBSTRINGS = ()
+# Empty tuple = all active California incidents. Override via MONITOR_COUNTIES in .env.
+TARGET_COUNTY_SUBSTRINGS = _parse_county_substrings()
 
 
 def monitored_region_label():
@@ -92,48 +102,73 @@ def save_seen_fires(seen):
         f.write(payload)
 
 
+def build_teams_message_payload(subject, body):
+    """
+    JSON shape required by Teams 'webhook alerts' Power Automate flows and
+    incoming webhooks: type message + adaptive card attachments array.
+    """
+    return {
+        "type": "message",
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "contentUrl": None,
+                "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.2",
+                    "body": [
+                        {
+                            "type": "TextBlock",
+                            "text": subject,
+                            "weight": "Bolder",
+                            "size": "Medium",
+                            "wrap": True,
+                        },
+                        {
+                            "type": "TextBlock",
+                            "text": body,
+                            "wrap": True,
+                        },
+                    ],
+                },
+            }
+        ],
+    }
+
+
+def send_power_automate_alert(subject, body, **_fields):
+    """POST Teams adaptive-card JSON to a Power Automate webhook trigger."""
+    if not POWER_AUTOMATE_WEBHOOK_URL:
+        return False
+
+    payload = build_teams_message_payload(subject, body)
+    try:
+        response = requests.post(
+            POWER_AUTOMATE_WEBHOOK_URL,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
+        response.raise_for_status()
+        print("Power Automate alert sent.")
+        return True
+    except requests.RequestException as e:
+        print(f"ERROR: Could not reach Power Automate: {e}")
+        if getattr(e, "response", None) is not None:
+            print(f"  Response: {e.response.text[:500]}")
+        return False
+
+
 def send_teams_message(subject, body):
-    """Send an alert to Microsoft Teams. Falls back to console print if not configured."""
+    """Send an alert to Microsoft Teams incoming webhook."""
     if not TEAMS_WEBHOOK_URL:
-        print("\n" + "="*50)
-        print("TEAMS WEBHOOK NOT CONFIGURED - printing alert to console:")
-        print("="*50)
-        print(f"SUBJECT: {subject}")
-        print(body)
-        print("="*50 + "\n")
         return False
 
     try:
-        payload = {
-            "type": "message",
-            "attachments": [
-                {
-                    "contentType": "application/vnd.microsoft.card.adaptive",
-                    "content": {
-                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                        "type": "AdaptiveCard",
-                        "version": "1.2",
-                        "body": [
-                            {
-                                "type": "TextBlock",
-                                "text": subject,
-                                "weight": "Bolder",
-                                "size": "Medium",
-                                "wrap": True,
-                            },
-                            {
-                                "type": "TextBlock",
-                                "text": body,
-                                "wrap": True,
-                            },
-                        ],
-                    },
-                }
-            ],
-        }
         response = requests.post(
             TEAMS_WEBHOOK_URL,
-            json=payload,
+            json=build_teams_message_payload(subject, body),
             timeout=20,
         )
         response.raise_for_status()
@@ -142,6 +177,22 @@ def send_teams_message(subject, body):
     except requests.RequestException as e:
         print(f"ERROR: Could not send Teams message: {e}")
         return False
+
+
+def send_alert(subject, body, **_fields):
+    """Send via Power Automate (preferred), then Teams, else print to console."""
+    if send_power_automate_alert(subject, body):
+        return True
+    if send_teams_message(subject, body):
+        return True
+
+    print("\n" + "=" * 50)
+    print("NO WEBHOOK CONFIGURED - printing alert to console:")
+    print("=" * 50)
+    print(f"SUBJECT: {subject}")
+    print(body)
+    print("=" * 50 + "\n")
+    return False
 
 
 def get_fire_id(props, name, latitude, longitude):
@@ -201,7 +252,7 @@ def format_fire_lines(fires):
     if not fires:
         return (
             f"No active {monitored_region_label()} incidents in the CAL FIRE feed right now.\n"
-            "(The test still confirms your Teams webhook + API access work.)\n"
+            "(The test still confirms your webhook + API access work.)\n"
         )
     lines = []
     for f in fires:
@@ -216,14 +267,14 @@ def format_fire_lines(fires):
     return "\n".join(lines)
 
 
-def send_test_teams_message():
-    """Send a single Teams message to verify the webhook and show current monitored incidents."""
-    if not TEAMS_WEBHOOK_URL:
+def send_test_alert():
+    """Send one test alert to verify webhooks and show current monitored incidents."""
+    if not POWER_AUTOMATE_WEBHOOK_URL and not TEAMS_WEBHOOK_URL:
         print(
-            "\nNo Teams message was sent - TEAMS_WEBHOOK_URL is not loaded.\n"
-            "  • In this project folder, create a file named `.env` (copy from `.env.example`).\n"
-            "  • Set TEAMS_WEBHOOK_URL to your Microsoft Teams incoming webhook URL.\n"
-            "  • Save `.env`, then run: python fire_check.py --test-teams\n"
+            "\nNo alert was sent - no webhook URL in .env.\n"
+            "  • Set POWER_AUTOMATE_WEBHOOK_URL (Power Automate HTTP trigger URL), or\n"
+            "  • Set TEAMS_WEBHOOK_URL (Teams incoming webhook).\n"
+            "  • Then run: python3 fire_check.py --test\n"
         )
         return
 
@@ -245,9 +296,16 @@ CAL FIRE active incidents (all CA): {total}
 ---
 Source: CAL FIRE public GeoJSON API (no API key, free)
 """
-    subject = f"[TEST] {region_label} fire alert - Teams check"
-    print(f"Sending test Teams message ({region_label} incidents in feed: {len(fires)})...")
-    send_teams_message(subject, body)
+    subject = f"[TEST] {region_label} fire alert"
+    print(f"Sending test alert ({region_label} incidents in feed: {len(fires)})...")
+    send_alert(
+        subject,
+        body,
+        alertType="test",
+        region=region_label,
+        incidentCount=len(fires),
+        totalCaliforniaIncidents=total,
+    )
 
 
 def check_fires():
@@ -318,34 +376,49 @@ Google Maps: {maps_link}
 Source: CAL FIRE public incident API
 """
         print(f"  NEW FIRE: {name} at ({latitude}, {longitude})")
-        if send_teams_message(subject, body):
+        if send_alert(
+            subject,
+            body,
+            alertType="fire",
+            fireName=name,
+            latitude=latitude,
+            longitude=longitude,
+            county=county_text.title(),
+            acres=acres,
+            containment=containment,
+            started=started,
+            updated=updated,
+            adminUnit=admin_unit,
+            mapsUrl=maps_link,
+        ):
             seen.add(fire_id)
             new_fires += 1
 
     save_seen_fires(seen)
 
+    region = monitored_region_label()
     if new_fires == 0:
-        print(f"No new {monitored_region_label()} fires found.")
+        print(f"No new {region} fires found.")
     else:
-        print(f"Done. Sent {new_fires} alert(s).")
+        print(f"Done. Sent {new_fires} new {region} alert(s).")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Fire alerts from CAL FIRE public API"
+        description="CAL FIRE incident alerts (GeoJSON API) with Power Automate / Teams notifications",
+    )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Send one test alert to verify webhook + API (no deduplication)",
     )
     parser.add_argument(
         "--test-teams",
         action="store_true",
-        help="Send one Teams message to verify webhook + API (no deduplication, no schedule)",
-    )
-    parser.add_argument(
-        "--test-email",
-        action="store_true",
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
-    if args.test_teams or args.test_email:
-        send_test_teams_message()
+    if args.test or args.test_teams:
+        send_test_alert()
     else:
         check_fires()
